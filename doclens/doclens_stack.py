@@ -1,4 +1,5 @@
 from aws_cdk import RemovalPolicy, Stack, aws_s3 as s3
+from aws_cdk import aws_dynamodb as dynamodb
 from constructs import Construct
 
 
@@ -26,4 +27,16 @@ class DocLensStack(Stack):
             enforce_ssl=True,
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
+        )
+
+        self.jobs_table = dynamodb.Table(
+            self,
+            "JobsTable",
+            table_name="doclens-jobs",
+            partition_key=dynamodb.Attribute(
+                name="job_id",
+                type=dynamodb.AttributeType.STRING,
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=RemovalPolicy.DESTROY,
         )
