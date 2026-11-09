@@ -1,0 +1,11 @@
+{
+  "app": "python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "**/*.js", "tsconfig.json", "package*.json", ".venv/**/*", ".cdk.staging/**/*", "dist/**/*", "lambdas/**"]
+  },
+  "context": {
+    "@aws-cdk/aws-apigateway:usagePlanKeyOrderInsensitiveId": true,
+    "@aws-cdk/core:stackRelativeExports": true
+  }
+}

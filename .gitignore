@@ -1,0 +1,12 @@
+AGENTS.md
+ROADMAP.md
+.env
+.env.*
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cdk.staging/
+cdk.out/
+node_modules/
+.pnpm-store/
