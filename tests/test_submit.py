@@ -2,12 +2,15 @@ import base64
 import json
 from datetime import datetime, timedelta
 from uuid import UUID
+from unittest.mock import Mock, patch
 
 import boto3
 import pytest
 from moto import mock_aws
 
 from lambdas.submit.handler import lambda_handler
+from lambdas.status.handler import lambda_handler as status_handler
+from lambdas.worker.handler import lambda_handler as worker_handler
 
 
 REQUEST = {"s3_key": "uploads/document.txt", "tone": "executive"}
@@ -91,3 +94,45 @@ def test_aws_failure(aws, monkeypatch, service):
     else:
         item, = table.scan()["Items"]
         assert item["status"] == "PENDING"
+
+
+def test_submit_worker_status_flow(aws, monkeypatch):
+    _, sqs, queue_url = aws
+    monkeypatch.setenv("UPLOAD_BUCKET", "doclens-uploads")
+    monkeypatch.setenv("RESULTS_BUCKET", "doclens-results")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+    s3 = boto3.client("s3")
+    s3.create_bucket(Bucket="doclens-uploads")
+    s3.create_bucket(Bucket="doclens-results")
+    s3.put_object(Bucket="doclens-uploads", Key=REQUEST["s3_key"], Body=b"Original text")
+
+    submitted = lambda_handler({"body": json.dumps(REQUEST)}, None)
+    assert submitted["statusCode"] == 202
+    job_id = json.loads(submitted["body"])["job_id"]
+    status_event = {"pathParameters": {"job_id": job_id}}
+    assert json.loads(status_handler(status_event, None)["body"])["status"] == "PENDING"
+
+    message, = sqs.receive_message(
+        QueueUrl=queue_url, MessageSystemAttributeNames=["ApproximateReceiveCount"],
+    )["Messages"]
+    record = {
+        "messageId": message["MessageId"],
+        "body": message["Body"],
+        "attributes": message["Attributes"],
+    }
+    bedrock = Mock()
+    bedrock.converse.return_value = {"output": {"message": {"content": [{"text": "Summary"}]}}}
+    real_client = boto3.client
+    with patch("lambdas.worker.handler.boto3.client") as make_client:
+        make_client.side_effect = lambda service, **kwargs: (
+            bedrock if service == "bedrock-runtime" else real_client(service, **kwargs)
+        )
+        assert worker_handler({"Records": [record]}, None) == {"batchItemFailures": []}
+
+    completed = status_handler(status_event, None)
+    assert completed["statusCode"] == 200
+    body = json.loads(completed["body"])
+    assert body["job_id"] == job_id and body["status"] == "DONE"
+    assert f"/summaries/{job_id}.txt?" in body["result_url"]
+    result = s3.get_object(Bucket="doclens-results", Key=f"summaries/{job_id}.txt")
+    assert result["Body"].read() == b"Summary"

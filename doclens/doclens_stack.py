@@ -148,3 +148,33 @@ class DocLensStack(Stack):
                 report_batch_item_failures=True,
             )
         )
+
+        status_logs = logs.LogGroup(
+            self,
+            "StatusLogs",
+            retention=logs.RetentionDays.ONE_WEEK,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        status = lambda_.Function(
+            self,
+            "StatusFunction",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.lambda_handler",
+            code=lambda_.Code.from_asset(
+                str(Path(__file__).resolve().parents[1] / "lambdas" / "status"),
+                exclude=["__pycache__", "*.pyc"],
+            ),
+            log_group=status_logs,
+            environment={
+                "JOBS_TABLE": self.jobs_table.table_name,
+                "RESULTS_BUCKET": self.results_bucket.bucket_name,
+            },
+        )
+        status.apply_removal_policy(RemovalPolicy.DESTROY)
+        self.jobs_table.grant(status, "dynamodb:GetItem")
+        self.results_bucket.grant_read(status, "summaries/*")
+        self.jobs_resource.add_resource("{job_id}").add_method(
+            "GET",
+            apigateway.LambdaIntegration(status),
+            authorization_type=apigateway.AuthorizationType.NONE,
+        )
