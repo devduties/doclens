@@ -1,9 +1,11 @@
 from pathlib import Path
 
-from aws_cdk import RemovalPolicy, Stack
+from aws_cdk import ArnFormat, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_event_sources as event_sources
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_sqs as sqs
@@ -52,6 +54,7 @@ class DocLensStack(Stack):
             self,
             "JobsQueue",
             encryption=sqs.QueueEncryption.KMS_MANAGED,
+            visibility_timeout=Duration.minutes(15),
             removal_policy=RemovalPolicy.DESTROY,
         )
 
@@ -87,4 +90,61 @@ class DocLensStack(Stack):
             "POST",
             apigateway.LambdaIntegration(submit),
             authorization_type=apigateway.AuthorizationType.NONE,
+        )
+
+        worker_logs = logs.LogGroup(
+            self,
+            "WorkerLogs",
+            retention=logs.RetentionDays.ONE_WEEK,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        model_id = "us.anthropic.claude-sonnet-4-6"
+        worker = lambda_.Function(
+            self,
+            "WorkerFunction",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.lambda_handler",
+            code=lambda_.Code.from_asset(
+                str(Path(__file__).resolve().parents[1] / "lambdas" / "worker"),
+                exclude=["__pycache__", "*.pyc"],
+            ),
+            log_group=worker_logs,
+            timeout=Duration.seconds(150),
+            environment={
+                "JOBS_TABLE": self.jobs_table.table_name,
+                "UPLOAD_BUCKET": self.upload_bucket.bucket_name,
+                "RESULTS_BUCKET": self.results_bucket.bucket_name,
+                "BEDROCK_MODEL_ID": model_id,
+            },
+        )
+        worker.apply_removal_policy(RemovalPolicy.DESTROY)
+        self.jobs_table.grant(worker, "dynamodb:UpdateItem")
+        self.upload_bucket.grant_read(worker, "uploads/*")
+        self.results_bucket.grant_put(worker, "summaries/*")
+        iam.Grant.add_to_principal(
+            grantee=worker,
+            actions=["bedrock:InvokeModel"],
+            resource_arns=[
+                self.format_arn(
+                    service="bedrock",
+                    resource="inference-profile",
+                    resource_name=model_id,
+                    arn_format=ArnFormat.SLASH_RESOURCE_NAME,
+                ),
+                self.format_arn(
+                    service="bedrock",
+                    region="*",
+                    account="",
+                    resource="foundation-model",
+                    resource_name=model_id.removeprefix("us."),
+                    arn_format=ArnFormat.SLASH_RESOURCE_NAME,
+                ),
+            ],
+        )
+        worker.add_event_source(
+            event_sources.SqsEventSource(
+                self.jobs_queue,
+                batch_size=1,
+                report_batch_item_failures=True,
+            )
         )
