@@ -96,7 +96,15 @@ def test_aws_failure(aws, monkeypatch, service):
         assert item["status"] == "PENDING"
 
 
-def test_submit_worker_status_flow(aws, monkeypatch):
+@pytest.mark.parametrize(
+    ("tone", "expected_instructions"),
+    [
+        ("executive", ("two to three sentences", "Lead with the main conclusion", "formal language")),
+        ("bullet_points", ("five to eight bullet points", "Start directly with the first bullet")),
+        ("eli5", ("no background in the topic", "short sentences and everyday words", "No jargon")),
+    ],
+)
+def test_submit_worker_status_flow(aws, monkeypatch, tone, expected_instructions):
     _, sqs, queue_url = aws
     monkeypatch.setenv("UPLOAD_BUCKET", "doclens-uploads")
     monkeypatch.setenv("RESULTS_BUCKET", "doclens-results")
@@ -106,7 +114,7 @@ def test_submit_worker_status_flow(aws, monkeypatch):
     s3.create_bucket(Bucket="doclens-results")
     s3.put_object(Bucket="doclens-uploads", Key=REQUEST["s3_key"], Body=b"Original text")
 
-    submitted = lambda_handler({"body": json.dumps(REQUEST)}, None)
+    submitted = lambda_handler({"body": json.dumps({**REQUEST, "tone": tone})}, None)
     assert submitted["statusCode"] == 202
     job_id = json.loads(submitted["body"])["job_id"]
     status_event = {"pathParameters": {"job_id": job_id}}
@@ -129,10 +137,16 @@ def test_submit_worker_status_flow(aws, monkeypatch):
         )
         assert worker_handler({"Records": [record]}, None) == {"batchItemFailures": []}
 
+    bedrock.converse.assert_called_once()
+    system_prompt, = bedrock.converse.call_args.kwargs["system"]
+    for instruction in expected_instructions:
+        assert instruction in system_prompt["text"]
+
     completed = status_handler(status_event, None)
     assert completed["statusCode"] == 200
     body = json.loads(completed["body"])
     assert body["job_id"] == job_id and body["status"] == "DONE"
+    assert body["tone"] == tone
     assert f"/summaries/{job_id}.txt?" in body["result_url"]
     result = s3.get_object(Bucket="doclens-results", Key=f"summaries/{job_id}.txt")
     assert result["Body"].read() == b"Summary"
