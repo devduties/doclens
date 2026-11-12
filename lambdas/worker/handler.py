@@ -35,6 +35,7 @@ SYSTEM_PROMPTS = {
 
 def lambda_handler(event, context):
     table = boto3.resource("dynamodb").Table(os.environ["JOBS_TABLE"])
+    max_receive_count = int(os.environ["JOBS_MAX_RECEIVE_COUNT"])
     s3 = boto3.client("s3")
     bedrock = boto3.client(
         "bedrock-runtime",
@@ -43,14 +44,14 @@ def lambda_handler(event, context):
     failures = []
     for record in event["Records"]:
         try:
-            _process_record(record, table, s3, bedrock)
+            _process_record(record, table, s3, bedrock, max_receive_count)
         except Exception:
             logger.exception("Worker could not process message %s", record["messageId"])
             failures.append({"itemIdentifier": record["messageId"]})
     return {"batchItemFailures": failures}
 
 
-def _process_record(record, table, s3, bedrock):
+def _process_record(record, table, s3, bedrock, max_receive_count):
     message = json.loads(record["body"])
     job_id = message["job_id"]
     retry_count = int(record["attributes"]["ApproximateReceiveCount"]) - 1
@@ -73,6 +74,16 @@ def _process_record(record, table, s3, bedrock):
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return
 
+    try:
+        _summarize_job(message, job_id, retry_count, table, s3, bedrock)
+    except Exception as exc:
+        if retry_count + 1 >= max_receive_count:
+            reason = exc.response["Error"]["Code"] if isinstance(exc, ClientError) else type(exc).__name__
+            _finish_job(table, job_id, retry_count, "FAILED", "error", f"Retries exhausted: {reason}")
+        raise
+
+
+def _summarize_job(message, job_id, retry_count, table, s3, bedrock):
     source = s3.get_object(Bucket=os.environ["UPLOAD_BUCKET"], Key=message["s3_key"])
     with closing(source["Body"]) as body:
         document = body.read().decode("utf-8")

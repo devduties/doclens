@@ -50,11 +50,23 @@ class DocLensStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        max_receive_count = 3
+        jobs_dlq = sqs.Queue(
+            self,
+            "JobsDeadLetterQueue",
+            encryption=sqs.QueueEncryption.KMS_MANAGED,
+            retention_period=Duration.days(14),
+            removal_policy=RemovalPolicy.DESTROY,
+        )
         self.jobs_queue = sqs.Queue(
             self,
             "JobsQueue",
             encryption=sqs.QueueEncryption.KMS_MANAGED,
             visibility_timeout=Duration.minutes(15),
+            dead_letter_queue=sqs.DeadLetterQueue(
+                queue=jobs_dlq,
+                max_receive_count=max_receive_count,
+            ),
             removal_policy=RemovalPolicy.DESTROY,
         )
 
@@ -115,6 +127,7 @@ class DocLensStack(Stack):
                 "UPLOAD_BUCKET": self.upload_bucket.bucket_name,
                 "RESULTS_BUCKET": self.results_bucket.bucket_name,
                 "BEDROCK_MODEL_ID": model_id,
+                "JOBS_MAX_RECEIVE_COUNT": str(max_receive_count),
             },
         )
         worker.apply_removal_policy(RemovalPolicy.DESTROY)

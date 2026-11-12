@@ -109,6 +109,7 @@ def test_submit_worker_status_flow(aws, monkeypatch, tone, expected_instructions
     monkeypatch.setenv("UPLOAD_BUCKET", "doclens-uploads")
     monkeypatch.setenv("RESULTS_BUCKET", "doclens-results")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+    monkeypatch.setenv("JOBS_MAX_RECEIVE_COUNT", "3")
     s3 = boto3.client("s3")
     s3.create_bucket(Bucket="doclens-uploads")
     s3.create_bucket(Bucket="doclens-results")

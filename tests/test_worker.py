@@ -29,6 +29,7 @@ def run(*records):
 def aws(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("JOBS_TABLE", "doclens-jobs")
+    monkeypatch.setenv("JOBS_MAX_RECEIVE_COUNT", "3")
     monkeypatch.setenv("UPLOAD_BUCKET", "doclens-uploads")
     monkeypatch.setenv("RESULTS_BUCKET", "doclens-results")
     monkeypatch.setenv("BEDROCK_MODEL_ID", MODEL)
@@ -129,3 +130,28 @@ def test_unexpected_s3_failure_retries_message(aws):
     s3.delete_object(Bucket="doclens-uploads", Key=SOURCE)
     assert run(record()) == [{"itemIdentifier": "job-1"}]
     bedrock.converse.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["bedrock", "s3"])
+def test_exhausted_retries_mark_job_failed_and_report_message(aws, failure):
+    table, s3, bedrock = aws
+    if failure == "bedrock":
+        reason = "ThrottlingException"
+        bedrock.converse.side_effect = ClientError({"Error": {"Code": reason}}, "Converse")
+    else:
+        reason = "NoSuchKey"
+        s3.delete_object(Bucket="doclens-uploads", Key=SOURCE)
+
+    key = {"job_id": "job-1"}
+    for receive_count in (1, 2):
+        assert run(record(receive_count=receive_count)) == [{"itemIdentifier": "job-1"}]
+        item = table.get_item(Key=key)["Item"]
+        assert item["status"] == "PROCESSING"
+        assert item["retry_count"] == receive_count - 1
+        assert "error" not in item
+
+    assert run(record(receive_count=3)) == [{"itemIdentifier": "job-1"}]
+    item = table.get_item(Key=key)["Item"]
+    assert item["status"] == "FAILED"
+    assert item["retry_count"] == 2
+    assert item["error"] == f"Retries exhausted: {reason}"
