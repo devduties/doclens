@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from aws_cdk import ArnFormat, Duration, RemovalPolicy, Stack
+from aws_cdk import ArnFormat, CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
@@ -102,6 +102,7 @@ class DocLensStack(Stack):
             "POST",
             apigateway.LambdaIntegration(submit),
             authorization_type=apigateway.AuthorizationType.NONE,
+            api_key_required=True,
         )
 
         worker_logs = logs.LogGroup(
@@ -190,4 +191,13 @@ class DocLensStack(Stack):
             "GET",
             apigateway.LambdaIntegration(status),
             authorization_type=apigateway.AuthorizationType.NONE,
+            api_key_required=True,
         )
+
+        api_key = self.api.add_api_key("JobsApiKey", description="DocLens client key")
+        api_key.apply_removal_policy(RemovalPolicy.DESTROY)
+        usage_plan = self.api.add_usage_plan("JobsUsagePlan")
+        usage_plan.apply_removal_policy(RemovalPolicy.DESTROY)
+        usage_plan.add_api_stage(stage=self.api.deployment_stage)
+        usage_plan.add_api_key(api_key)
+        CfnOutput(self, "JobsApiKeyId", value=api_key.key_id)
